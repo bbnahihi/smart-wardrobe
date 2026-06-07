@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torchvision import models, transforms
 from PIL import Image
-from rembg import remove
+# ĐÃ XÓA: from rembg import remove
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -33,7 +33,7 @@ if IDX_TO_CAT and IDX_TO_STYLE:
     model = model.to(device)
     model.eval()
 
-# Đổi bộ lọc: Đã là hình vuông sẵn thì chỉ cần thu nhỏ về 224, KHÔNG CẮT NỮA
+# Bộ lọc ảnh giữ nguyên
 image_transforms = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -41,19 +41,17 @@ image_transforms = transforms.Compose([
 ])
 
 def phan_loai_thong_minh(image_path):
+    # 1. Đọc ảnh gốc
     img_goc = Image.open(image_path).convert('RGB')
     
-    # 1. Cắt phông nền lấy vật thể
-    img_trong_suot = remove(img_goc)
-    
     # 2. Tạo khung Canvas hình vuông màu trắng (dựa trên cạnh dài nhất)
-    max_size = max(img_trong_suot.size)
+    max_size = max(img_goc.size)
     anh_vuong = Image.new("RGB", (max_size, max_size), (255, 255, 255))
     
-    # 3. Dán vật thể vào chính giữa Canvas trắng
-    x = (max_size - img_trong_suot.size[0]) // 2
-    y = (max_size - img_trong_suot.size[1]) // 2
-    anh_vuong.paste(img_trong_suot, (x, y), mask=img_trong_suot.split()[3])
+    # 3. DÁN TRỰC TIẾP ẢNH GỐC VÀO (Không xóa nền, giữ nguyên bối cảnh)
+    x = (max_size - img_goc.size[0]) // 2
+    y = (max_size - img_goc.size[1]) // 2
+    anh_vuong.paste(img_goc, (x, y))
 
     # 4. Đưa vào AI nhận diện
     input_tensor = image_transforms(anh_vuong).unsqueeze(0).to(device)
@@ -66,5 +64,5 @@ def phan_loai_thong_minh(image_path):
     category = IDX_TO_CAT[cat_pred.item()]
     style = IDX_TO_STYLE[style_pred.item()]
 
-    # Trả về thêm bức ảnh vuông để web hiển thị
+    # Trả về ảnh vuông (vẫn còn phông nền gốc) để Check VAR
     return category, style, anh_vuong
