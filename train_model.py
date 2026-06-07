@@ -23,9 +23,10 @@ print(f"[*] Đang sử dụng thiết bị: {device}")
 # ==========================================
 print("[*] Đang đọc file styles.csv...")
 df = pd.read_csv('styles.csv', on_bad_lines='skip')
+image_dir = 'anh_da_giai_nen/images'
 
 # Lọc chỉ lấy Quần áo và bỏ qua các dòng bị thiếu dữ liệu Phong cách (usage)
-df_apparel = df[(df['masterCategory'] == 'Apparel') & (df['usage'].notna())].copy()
+df_apparel = df[(df['masterCategory'].isin(['Apparel', 'Footwear'])) & (df['usage'].notna())].copy()
 
 # Lấy 15 loại quần áo phổ biến nhất
 top_15_cat = df_apparel['articleType'].value_counts().nlargest(15).index
@@ -83,23 +84,24 @@ class FashionDataset(Dataset):
 # ==========================================
 data_transforms = {
     'train': transforms.Compose([
-        transforms.Resize(256),             # Thu nhỏ giữ tỷ lệ
-        transforms.RandomCrop(224),         # Cắt ngẫu nhiên 224x224 (Giúp AI học chống nhiễu)
+        transforms.Resize(256),
+        transforms.RandomResizedCrop(224, scale=(0.7, 1.0)), # Zoom nhẹ nhàng hơn
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
+        transforms.RandomErasing(p=0.3, scale=(0.02, 0.1)),  # Chỉ che 30% số ảnh, mảng che nhỏ hơn
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ]),
     'val': transforms.Compose([
-        transforms.Resize(256),             # Thu nhỏ giữ tỷ lệ
-        transforms.CenterCrop(224),         # Cắt chính giữa 224x224 (Chuẩn mực để chấm điểm)
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ]),
 }
 
 image_datasets = {
-    'train': FashionDataset(train_df, 'images', data_transforms['train']),
-    'val': FashionDataset(val_df, 'images', data_transforms['val'])
+    'train': FashionDataset(train_df, image_dir, data_transforms['train']),
+    'val': FashionDataset(val_df, image_dir, data_transforms['val'])
 }
 dataloaders = {x: DataLoader(image_datasets[x], batch_size=32, shuffle=True) for x in ['train', 'val']}
 
@@ -107,11 +109,11 @@ dataloaders = {x: DataLoader(image_datasets[x], batch_size=32, shuffle=True) for
 class MultiTaskResNet(nn.Module):
     def __init__(self, num_categories, num_styles):
         super(MultiTaskResNet, self).__init__()
-        self.resnet = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+        # BẮT BUỘC DÙNG DEFAULT KHI TRAIN ĐỂ CÓ KIẾN THỨC NỀN
+        self.resnet = models.resnet18(weights=models.ResNet18_Weights.DEFAULT) 
+        
         num_ftrs = self.resnet.fc.in_features
-        self.resnet.fc = nn.Identity() # Cắt bỏ cái đầu mặc định
-
-        # Mọc ra 2 cái đầu mới
+        self.resnet.fc = nn.Identity()
         self.fc_category = nn.Linear(num_ftrs, num_categories)
         self.fc_style = nn.Linear(num_ftrs, num_styles)
 
@@ -121,20 +123,32 @@ class MultiTaskResNet(nn.Module):
 
 model = MultiTaskResNet(len(cat_to_idx), len(style_to_idx)).to(device)
 
-# Đóng băng xương sống để chạy cho nhanh trên CPU
+# 1. Đóng băng TOÀN BỘ não bộ lúc đầu
 for name, param in model.named_parameters():
-    if 'fc_category' not in name and 'fc_style' not in name:
-        param.requires_grad = False
+    param.requires_grad = False
 
-# Tính toán lỗi cho cả 2 nhánh
+# 2. TUYỆT CHIÊU MỞ KHÓA: Chỉ đánh thức Block cuối cùng (layer4) và 2 đầu ra
+for name, param in model.named_parameters():
+    if 'resnet.layer4' in name or 'fc_category' in name or 'fc_style' in name:
+        param.requires_grad = True
+
+# In ra để kiểm tra xem đã mở khóa đúng chưa
+print("\n[*] Các lớp đang được huấn luyện:")
+for name, param in model.named_parameters():
+    if param.requires_grad:
+        print(" -", name)
+        
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.001)
+# 3. Cấu hình Optimizer: Học cực chậm (lr=0.0001) để "nắn nót" lại kiến thức
+params_to_update = filter(lambda p: p.requires_grad, model.parameters())
+optimizer = optim.Adam(params_to_update, lr=0.0001)
 
-# ==========================================
-# 4. VÒNG LẶP HUẤN LUYỆN
-# ==========================================
-print("\n========== BẮT ĐẦU HUẤN LUYỆN ==========")
-num_epochs = 15
+# 4. Bộ giảm tốc độ học (Scheduler): Cứ sau 5 vòng, đi chậm lại 1 nửa
+from torch.optim import lr_scheduler
+exp_lr_scheduler = lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+
+# Đặt số vòng lặp (Khuyên dùng 15-20 vòng cho việc học sâu này)
+num_epochs = 20
 best_model_wts = copy.deepcopy(model.state_dict())
 best_acc = 0.0
 
@@ -184,6 +198,7 @@ for epoch in range(num_epochs):
         if phase == 'val' and epoch_acc > best_acc:
             best_acc = epoch_acc
             best_model_wts = copy.deepcopy(model.state_dict())
+    exp_lr_scheduler.step()
     print()
 
 model.load_state_dict(best_model_wts)
