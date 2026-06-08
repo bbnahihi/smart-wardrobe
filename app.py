@@ -6,8 +6,10 @@
 import streamlit as st
 import pandas as pd
 import os
+import uuid
 from PIL import Image
 from ai_module import phan_loai_thong_minh
+from logic_module import suggest_outfit
 
 # ==========================================
 # 0. KHỞI TẠO HỆ THỐNG LƯU TRỮ VĨNH VIỄN
@@ -25,54 +27,9 @@ else:
     my_wardrobe.to_csv(DB_PATH, index=False)
 
 # Danh mục phân nhóm để thuật toán biết đâu là Áo, Quần, Giày
-TOPS_LIST = ['Tshirts', 'Shirts', 'Top', 'Sweaters', 'Jackets', 'Dresses']
-BOTTOMS_LIST = ['Jeans', 'Trousers', 'Shorts', 'Skirts']
-SHOES_LIST = ['Casual Shoes', 'Sports Shoes', 'Heels', 'Flats']
-
 # ==========================================
 # 1. THUẬT TOÁN STYLIST ẢO
 # ==========================================
-def suggest_outfit(user_chosen_item_path):
-    wardrobe_df = pd.read_csv(DB_PATH)
-    
-    # Tìm thông tin món đồ gốc
-    chosen_item = wardrobe_df[wardrobe_df['image_path'] == user_chosen_item_path].iloc[0]
-    target_style = chosen_item['style']
-    target_cat = chosen_item['category']
-    
-    # Chỉ lấy những món đồ CÙNG STYLE trong tủ
-    matching_items = wardrobe_df[wardrobe_df['style'] == target_style]
-    
-    outfit = {'Top': None, 'Bottom': None, 'Shoes': None}
-    
-    def get_random_item(cat_list):
-        subset = matching_items[matching_items['category'].isin(cat_list)]
-        if not subset.empty:
-            return subset.sample(1)['image_path'].values[0]
-        return None
-
-    # Logic: Nếu chọn Áo -> đi tìm Quần + Giày
-    if target_cat in TOPS_LIST:
-        outfit['Top'] = user_chosen_item_path
-        outfit['Bottom'] = get_random_item(BOTTOMS_LIST)
-        outfit['Shoes'] = get_random_item(SHOES_LIST)
-        
-    # Nếu chọn Quần -> đi tìm Áo + Giày
-    elif target_cat in BOTTOMS_LIST:
-        outfit['Bottom'] = user_chosen_item_path
-        outfit['Top'] = get_random_item(TOPS_LIST)
-        outfit['Shoes'] = get_random_item(SHOES_LIST)
-        
-    # Nếu chọn Giày -> đi tìm Áo + Quần
-    elif target_cat in SHOES_LIST:
-        outfit['Shoes'] = user_chosen_item_path
-        outfit['Top'] = get_random_item(TOPS_LIST)
-        outfit['Bottom'] = get_random_item(BOTTOMS_LIST)
-    else:
-        outfit['Top'] = user_chosen_item_path # Nếu là phụ kiện thì cứ coi như áo
-
-    return outfit, target_style
-
 # ==========================================
 # 2. XÂY DỰNG GIAO DIỆN WEB
 # ==========================================
@@ -103,7 +60,9 @@ with tab1:
                 with st.spinner("AI đang nhận diện và phân loại..."):
                     
                     # LƯU ẢNH VĨNH VIỄN VÀO THƯ MỤC MY_CLOSET (Không dùng temp file nữa)
-                    save_path = os.path.join('my_closet', uploaded_file.name)
+                    _, file_ext = os.path.splitext(uploaded_file.name)
+                    unique_filename = f"{uuid.uuid4().hex}{file_ext.lower()}"
+                    save_path = os.path.join('my_closet', unique_filename)
                     with open(save_path, "wb") as f:
                         f.write(uploaded_file.getbuffer())
 
@@ -121,7 +80,7 @@ with tab1:
                     metric1.metric(label="🧥 Nhãn Loại đồ", value=loai_do)
                     metric2.metric(label="🎨 Nhãn Phong cách", value=phong_cach)
                     
-                    with st.expander("Xem ảnh AI đã bóc tách"):
+                    with st.expander("Xem ảnh AI đã xử lý"):
                         st.image(anh_ai_nhin, caption="Ảnh AI đã xử lý")
 
 # ------------------------------------------
@@ -157,6 +116,10 @@ with tab2:
         if st.button("🪄 Phối đồ cho tôi!", type="primary"):
             # Gọi thuật toán gợi ý
             outfit_dict, outfit_style = suggest_outfit(chosen_item_path)
+
+            if outfit_style is None:
+                st.warning("Không tìm thấy món đồ đã chọn trong tủ đồ.")
+                st.stop()
             
             st.success(f"Đã tìm thấy Set đồ chuẩn phong cách **{outfit_style}** dành cho bạn!")
             
@@ -164,7 +127,7 @@ with tab2:
             col_top, col_bot, col_shoe = st.columns(3)
             
             with col_top:
-                st.markdown("### 👕 ÁO")
+                st.markdown("### 👕 ÁO / VÁY")
                 if outfit_dict['Top']:
                     st.image(outfit_dict['Top'], use_container_width=True)
                 else:
