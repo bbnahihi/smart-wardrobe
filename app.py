@@ -67,7 +67,7 @@ with tab1:
                         f.write(uploaded_file.getbuffer())
 
                     # Gọi AI nhận diện từ file vừa lưu
-                    loai_do, phong_cach, anh_ai_nhin = phan_loai_thong_minh(save_path)
+                    loai_do, phong_cach, anh_ai_nhin, do_tin_cay_loai, do_tin_cay_phong_cach = phan_loai_thong_minh(save_path)
                     
                     # Lưu thông tin vào CSDL CSV
                     new_row = pd.DataFrame([{'image_path': save_path, 'category': loai_do, 'style': phong_cach}])
@@ -77,8 +77,8 @@ with tab1:
                     st.success("Đã thêm thành công vào Tủ đồ cá nhân!")
                     
                     metric1, metric2 = st.columns(2)
-                    metric1.metric(label="🧥 Nhãn Loại đồ", value=loai_do)
-                    metric2.metric(label="🎨 Nhãn Phong cách", value=phong_cach)
+                    metric1.metric(label="🧥 Nhãn Loại đồ", value=f"{loai_do} - {do_tin_cay_loai:.2%}")
+                    metric2.metric(label="🎨 Nhãn Phong cách", value=f"{phong_cach} - {do_tin_cay_phong_cach:.2%}")
                     
                     with st.expander("Xem ảnh AI đã xử lý"):
                         st.image(anh_ai_nhin, caption="Ảnh AI đã xử lý")

@@ -28,9 +28,13 @@ image_dir = 'anh_da_giai_nen/images'
 # Lọc chỉ lấy Quần áo và bỏ qua các dòng bị thiếu dữ liệu Phong cách (usage)
 df_apparel = df[(df['masterCategory'].isin(['Apparel', 'Footwear'])) & (df['usage'].notna())].copy()
 
-# Lấy 15 loại quần áo phổ biến nhất
-top_15_cat = df_apparel['articleType'].value_counts().nlargest(15).index
-df_filtered = df_apparel[df_apparel['articleType'].isin(top_15_cat)].copy()
+target_categories = [
+    'Tshirts', 'Shirts', 'Top', 'Tops', 'Sweaters', 'Jackets',  # Nhóm Áo
+    'Jeans', 'Trousers', 'Shorts', 'Skirts', 'Track Pants',     # Nhóm Quần/Chân váy
+    'Casual Shoes', 'Formal Shoes', 'Sports Shoes', 'Heels', 'Flats', # Nhóm Giày
+    'Dresses'                                                   # Nhóm Váy liền thân
+]
+df_filtered = df_apparel[df_apparel['articleType'].isin(target_categories)].copy()
 
 # Giới hạn 600 ảnh mỗi loại để máy không bị quá tải
 df_final = df_filtered.groupby('articleType').head(600)
@@ -49,7 +53,7 @@ print(f"[*] AI sẽ học {len(cat_to_idx)} Loại đồ và {len(style_to_idx)}
 train_df, val_df = train_test_split(df_final, test_size=0.2, random_state=42)
 
 # ==========================================
-# 2. XÂY DỰNG CLASS ĐỌC ẢNH TỰ ĐỘNG
+# 2. XÂY DỰNG CLASS ĐỌC ẢNH TỰ ĐỘNG (ĐỒNG BỘ INFERENCE)
 # ==========================================
 class FashionDataset(Dataset):
     def __init__(self, dataframe, img_dir, transform=None):
@@ -64,36 +68,51 @@ class FashionDataset(Dataset):
         row = self.dataframe.iloc[idx]
         img_name = os.path.join(self.img_dir, str(row['id']) + ".jpg")
 
-        # Đọc ảnh (nếu file ảnh bị lỗi hoặc thiếu thì tạo 1 ảnh trắng để không bị crash code)
         try:
-            image = Image.open(img_name).convert('RGB')
+            # 1. Đọc ảnh gốc
+            img_goc = Image.open(img_name).convert('RGB')
+            
+            # 2. Tạo Canvas vuông trắng (bảo toàn 100% hình dáng áo, quần, giày)
+            max_size = max(img_goc.size)
+            image = Image.new("RGB", (max_size, max_size), (255, 255, 255))
+            x = (max_size - img_goc.size[0]) // 2
+            y = (max_size - img_goc.size[1]) // 2
+            image.paste(img_goc, (x, y))
+            
         except FileNotFoundError:
-            image = Image.new('RGB', (224, 224))
+            # Nếu lỗi, sinh ra ảnh vuông trắng tinh thay vì đen xì
+            image = Image.new('RGB', (224, 224), (255, 255, 255))
 
+        # 3. Nạp qua bộ biến đổi PyTorch
         if self.transform:
             image = self.transform(image)
 
-        # Lấy nhãn số cho Loại đồ và Phong cách
+        # Lấy nhãn số
         cat_label = cat_to_idx[row['articleType']]
         style_label = style_to_idx[row['usage']]
 
         return image, cat_label, style_label
 
 # ==========================================
-# 3. CHUẨN BỊ DATA LOADER VÀ MODEL KÉP
+# 3. CHUẨN BỊ DATA LOADER VÀ BỘ LỌC
 # ==========================================
 data_transforms = {
     'train': transforms.Compose([
-        transforms.Resize(256),
-        transforms.RandomResizedCrop(224, scale=(0.7, 1.0)), # Zoom nhẹ nhàng hơn
-        transforms.RandomHorizontalFlip(),
+        # Ảnh đã vuông sẵn, chỉ ép về 224x224 (KHÔNG dùng CenterCrop/RandomCrop nữa)
+        transforms.Resize((224, 224)), 
+        
+        # Tăng cường dữ liệu (Augmentation) để ResNet18 khôn hơn VGG
+        transforms.RandomHorizontalFlip(), # Lật ảnh ngang ngẫu nhiên
+        transforms.ColorJitter(brightness=0.1, contrast=0.1), # Thay đổi độ sáng/tương phản nhẹ
         transforms.ToTensor(),
-        transforms.RandomErasing(p=0.3, scale=(0.02, 0.1)),  # Chỉ che 30% số ảnh, mảng che nhỏ hơn
+        transforms.RandomErasing(p=0.3, scale=(0.02, 0.1)), # Che một mảng nhỏ trên ảnh
+        
+        # Bộ số vàng của ImageNet (Bắt buộc phải có để Transfer Learning)
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ]),
     'val': transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
+        # Tập thi: Chỉ thu nhỏ và chuẩn hóa, không thêm nhiễu
+        transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ]),
