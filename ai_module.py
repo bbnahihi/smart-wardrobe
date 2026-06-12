@@ -58,11 +58,15 @@ def phan_loai_thong_minh(image_path):
 
     with torch.no_grad():
         cat_out, style_out = model(input_tensor)
-        _, cat_pred = torch.max(cat_out, 1)
-        _, style_pred = torch.max(style_out, 1)
+        cat_probs = torch.softmax(cat_out, dim=1)
+        style_probs = torch.softmax(style_out, dim=1)
+        cat_confidence, cat_pred = torch.max(cat_probs, 1)
+        style_confidence, style_pred = torch.max(style_probs, 1)
 
     category = IDX_TO_CAT[cat_pred.item()]
     style = IDX_TO_STYLE[style_pred.item()]
+    category_confidence = float(cat_confidence.item())
+    style_confidence = float(style_confidence.item())
 
     # Trả về ảnh vuông (vẫn còn phông nền gốc) để Check VAR
-    return category, style, anh_vuong
+    return category, style, anh_vuong, category_confidence, style_confidence
