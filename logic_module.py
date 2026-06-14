@@ -1,7 +1,9 @@
-import pandas as pd
+import sqlite3
+from contextlib import contextmanager
+from pathlib import Path
 
 
-DB_PATH = "my_wardrobe_db.csv"
+DB_PATH = Path(__file__).resolve().parent / "my_wardrobe.db"
 
 TOPS_LIST = ['Tshirts', 'Shirts', 'Top', 'Tops', 'Sweaters', 'Jackets']
 BOTTOMS_LIST = ['Jeans', 'Trousers', 'Shorts', 'Skirts', 'Track Pants']
@@ -9,46 +11,121 @@ SHOES_LIST = ['Casual Shoes', 'Formal Shoes', 'Sports Shoes', 'Heels', 'Flats']
 DRESS_LIST = ['Dresses']
 
 
+@contextmanager
+def get_connection():
+    connection = sqlite3.connect(DB_PATH, timeout=30)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA busy_timeout=30000")
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
+
+
+def initialize_database():
+    with get_connection() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wardrobe (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                image_path TEXT NOT NULL UNIQUE,
+                category TEXT NOT NULL,
+                style TEXT NOT NULL
+            )
+            """
+        )
+
+
+def add_wardrobe_item(image_path, category, style):
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO wardrobe (image_path, category, style)
+            VALUES (?, ?, ?)
+            """,
+            (image_path, category, style),
+        )
+        return cursor.lastrowid
+
+
+def get_wardrobe_items():
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, image_path, category, style
+            FROM wardrobe
+            ORDER BY id DESC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_random_item(connection, target_style, categories):
+    placeholders = ", ".join("?" for _ in categories)
+    row = connection.execute(
+        f"""
+        SELECT image_path
+        FROM wardrobe
+        WHERE style = ? AND category IN ({placeholders})
+        ORDER BY RANDOM()
+        LIMIT 1
+        """,
+        (target_style, *categories),
+    ).fetchone()
+    return row["image_path"] if row else None
+
+
 def suggest_outfit(user_chosen_item_path):
-    wardrobe_df = pd.read_csv(DB_PATH)
+    with get_connection() as connection:
+        chosen_item = connection.execute(
+            """
+            SELECT image_path, category, style
+            FROM wardrobe
+            WHERE image_path = ?
+            LIMIT 1
+            """,
+            (user_chosen_item_path,),
+        ).fetchone()
 
-    chosen_rows = wardrobe_df[wardrobe_df['image_path'] == user_chosen_item_path]
-    if chosen_rows.empty:
-        return {'Top': None, 'Bottom': None, 'Shoes': None}, None
+        if chosen_item is None:
+            return {'Top': None, 'Bottom': None, 'Shoes': None}, None
 
-    chosen_item = chosen_rows.iloc[0]
-    target_style = chosen_item['style']
-    target_cat = chosen_item['category']
+        target_style = chosen_item["style"]
+        target_cat = chosen_item["category"]
+        outfit = {'Top': None, 'Bottom': None, 'Shoes': None}
 
-    matching_items = wardrobe_df[wardrobe_df['style'] == target_style]
-    outfit = {'Top': None, 'Bottom': None, 'Shoes': None}
-
-    def get_random_item(cat_list):
-        subset = matching_items[matching_items['category'].isin(cat_list)]
-        if not subset.empty:
-            return subset.sample(1)['image_path'].values[0]
-        return None
-
-    if target_cat in TOPS_LIST:
-        outfit['Top'] = user_chosen_item_path
-        outfit['Bottom'] = get_random_item(BOTTOMS_LIST)
-        outfit['Shoes'] = get_random_item(SHOES_LIST)
-
-    elif target_cat in DRESS_LIST:
-        outfit['Top'] = user_chosen_item_path
-        outfit['Shoes'] = get_random_item(SHOES_LIST)
-
-    elif target_cat in BOTTOMS_LIST:
-        outfit['Bottom'] = user_chosen_item_path
-        outfit['Top'] = get_random_item(TOPS_LIST)
-        outfit['Shoes'] = get_random_item(SHOES_LIST)
-
-    elif target_cat in SHOES_LIST:
-        outfit['Shoes'] = user_chosen_item_path
-        outfit['Top'] = get_random_item(TOPS_LIST)
-        outfit['Bottom'] = get_random_item(BOTTOMS_LIST)
-
-    else:
-        outfit['Top'] = user_chosen_item_path
+        if target_cat in TOPS_LIST:
+            outfit['Top'] = user_chosen_item_path
+            outfit['Bottom'] = get_random_item(
+                connection, target_style, BOTTOMS_LIST
+            )
+            outfit['Shoes'] = get_random_item(
+                connection, target_style, SHOES_LIST
+            )
+        elif target_cat in DRESS_LIST:
+            outfit['Top'] = user_chosen_item_path
+            outfit['Shoes'] = get_random_item(
+                connection, target_style, SHOES_LIST
+            )
+        elif target_cat in BOTTOMS_LIST:
+            outfit['Bottom'] = user_chosen_item_path
+            outfit['Top'] = get_random_item(
+                connection, target_style, TOPS_LIST
+            )
+            outfit['Shoes'] = get_random_item(
+                connection, target_style, SHOES_LIST
+            )
+        elif target_cat in SHOES_LIST:
+            outfit['Shoes'] = user_chosen_item_path
+            outfit['Top'] = get_random_item(
+                connection, target_style, TOPS_LIST
+            )
+            outfit['Bottom'] = get_random_item(
+                connection, target_style, BOTTOMS_LIST
+            )
+        else:
+            outfit['Top'] = user_chosen_item_path
 
     return outfit, target_style

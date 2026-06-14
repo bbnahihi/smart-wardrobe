@@ -4,6 +4,9 @@ dataset_quan_ao/
 dataset_phuc_tap/
 my_closet/
 my_wardrobe_db.csv
+*.db
+*.db-shm
+*.db-wal
 *.zip
 
 *.csv

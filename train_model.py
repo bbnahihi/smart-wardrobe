@@ -11,7 +11,6 @@ from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 from PIL import Image
 import os
-import time
 import copy
 from sklearn.model_selection import train_test_split
 
@@ -24,7 +23,13 @@ print(f"[*] Đang sử dụng thiết bị: {device}")
 print("[*] Đang đọc file styles.csv...")
 df = pd.read_csv('styles.csv', on_bad_lines='skip')
 image_dir = 'anh_da_giai_nen/images'
+print("[*] Đang kiểm tra đối chiếu file vật lý...")
+def check_file_exists(row):
+    return os.path.exists(os.path.join(image_dir, str(row['id']) + ".jpg"))
 
+# Chỉ giữ lại những dòng trong CSV mà file ảnh thực sự tồn tại
+df_final = df_final[df_final.apply(check_file_exists, axis=1)]
+print(f"[*] Dữ liệu sạch sẽ hoàn toàn. Số lượng hợp lệ: {len(df_final)} ảnh")
 # Lọc chỉ lấy Quần áo và bỏ qua các dòng bị thiếu dữ liệu Phong cách (usage)
 df_apparel = df[(df['masterCategory'].isin(['Apparel', 'Footwear'])) & (df['usage'].notna())].copy()
 
@@ -49,8 +54,13 @@ idx_to_style = {i: style for style, i in style_to_idx.items()}
 torch.save({'cat': idx_to_cat, 'style': idx_to_style}, 'labels_map.pth')
 print(f"[*] AI sẽ học {len(cat_to_idx)} Loại đồ và {len(style_to_idx)} Phong cách.")
 
-# Chia tập Train và Val
-train_df, val_df = train_test_split(df_final, test_size=0.2, random_state=42)
+# Chia tập Train và Val, giữ phân bố loại đồ giữa hai tập.
+train_df, val_df = train_test_split(
+    df_final,
+    test_size=0.2,
+    random_state=42,
+    stratify=df_final['articleType'],
+)
 
 # ==========================================
 # 2. XÂY DỰNG CLASS ĐỌC ẢNH TỰ ĐỘNG (ĐỒNG BỘ INFERENCE)
@@ -60,6 +70,20 @@ class FashionDataset(Dataset):
         self.dataframe = dataframe.reset_index(drop=True)
         self.img_dir = img_dir
         self.transform = transform
+        self._validate_image_paths()
+
+    def _validate_image_paths(self):
+        missing_paths = [
+            os.path.join(self.img_dir, f"{image_id}.jpg")
+            for image_id in self.dataframe['id']
+            if not os.path.isfile(os.path.join(self.img_dir, f"{image_id}.jpg"))
+        ]
+        if missing_paths:
+            preview = "\n".join(missing_paths[:10])
+            raise FileNotFoundError(
+                f"Thiếu {len(missing_paths)} ảnh trong dataset. "
+                f"Các file đầu tiên:\n{preview}"
+            )
 
     def __len__(self):
         return len(self.dataframe)
@@ -68,20 +92,16 @@ class FashionDataset(Dataset):
         row = self.dataframe.iloc[idx]
         img_name = os.path.join(self.img_dir, str(row['id']) + ".jpg")
 
-        try:
-            # 1. Đọc ảnh gốc
-            img_goc = Image.open(img_name).convert('RGB')
-            
-            # 2. Tạo Canvas vuông trắng (bảo toàn 100% hình dáng áo, quần, giày)
-            max_size = max(img_goc.size)
-            image = Image.new("RGB", (max_size, max_size), (255, 255, 255))
-            x = (max_size - img_goc.size[0]) // 2
-            y = (max_size - img_goc.size[1]) // 2
-            image.paste(img_goc, (x, y))
-            
-        except FileNotFoundError:
-            # Nếu lỗi, sinh ra ảnh vuông trắng tinh thay vì đen xì
-            image = Image.new('RGB', (224, 224), (255, 255, 255))
+        # Đọc ảnh theo cơ chế fail-fast. Ảnh thiếu hoặc hỏng phải dừng train.
+        with Image.open(img_name) as img:
+            img_goc = img.convert('RGB')
+
+        # Tạo canvas vuông trắng để bảo toàn tỷ lệ và hình dáng vật thể.
+        max_size = max(img_goc.size)
+        image = Image.new("RGB", (max_size, max_size), (255, 255, 255))
+        x = (max_size - img_goc.size[0]) // 2
+        y = (max_size - img_goc.size[1]) // 2
+        image.paste(img_goc, (x, y))
 
         # 3. Nạp qua bộ biến đổi PyTorch
         if self.transform:
@@ -151,6 +171,15 @@ for name, param in model.named_parameters():
     if 'resnet.layer4' in name or 'fc_category' in name or 'fc_style' in name:
         param.requires_grad = True
 
+
+def set_frozen_batchnorm_eval(module):
+    """Giữ running statistics của các BatchNorm đã đóng băng."""
+    for child in module.modules():
+        if isinstance(child, nn.modules.batchnorm._BatchNorm):
+            parameters = list(child.parameters())
+            if parameters and not any(param.requires_grad for param in parameters):
+                child.eval()
+
 # In ra để kiểm tra xem đã mở khóa đúng chưa
 print("\n[*] Các lớp đang được huấn luyện:")
 for name, param in model.named_parameters():
@@ -176,7 +205,11 @@ for epoch in range(num_epochs):
     print('-' * 10)
 
     for phase in ['train', 'val']:
-        model.train() if phase == 'train' else model.eval()
+        if phase == 'train':
+            model.train()
+            set_frozen_batchnorm_eval(model.resnet)
+        else:
+            model.eval()
         
         running_loss = 0.0
         running_corrects_cat = 0

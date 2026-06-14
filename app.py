@@ -4,27 +4,25 @@
 # ==========================================
 
 import streamlit as st
-import pandas as pd
 import os
+import sqlite3
 import uuid
-from PIL import Image
-from ai_module import phan_loai_thong_minh
-from logic_module import suggest_outfit
+from pathlib import Path
 
-# ==========================================
-# 0. KHỞI TẠO HỆ THỐNG LƯU TRỮ VĨNH VIỄN
-# ==========================================
-# Tạo thư mục chứa ảnh quần áo thực tế của bạn (nếu chưa có)
-if not os.path.exists('my_closet'):
-    os.makedirs('my_closet')
+from ai_module import ModelLoadError, phan_loai_thong_minh
+from logic_module import (
+    add_wardrobe_item,
+    get_wardrobe_items,
+    initialize_database,
+    suggest_outfit,
+)
 
-# Khởi tạo hoặc đọc CSDL tủ đồ
-DB_PATH = 'my_wardrobe_db.csv'
-if os.path.exists(DB_PATH):
-    my_wardrobe = pd.read_csv(DB_PATH)
-else:
-    my_wardrobe = pd.DataFrame(columns=['image_path', 'category', 'style'])
-    my_wardrobe.to_csv(DB_PATH, index=False)
+st.set_page_config(page_title="Smart Wardrobe AI", page_icon="👕", layout="wide")
+
+BASE_DIR = Path(__file__).resolve().parent
+CLOSET_DIR = BASE_DIR / "my_closet"
+CLOSET_DIR.mkdir(exist_ok=True)
+initialize_database()
 
 # Danh mục phân nhóm để thuật toán biết đâu là Áo, Quần, Giày
 # ==========================================
@@ -33,7 +31,6 @@ else:
 # ==========================================
 # 2. XÂY DỰNG GIAO DIỆN WEB
 # ==========================================
-st.set_page_config(page_title="Smart Wardrobe AI", page_icon="👕", layout="wide")
 st.title("👕 Smart Wardrobe AI - Trợ lý Thời trang Cá nhân")
 st.markdown("Hệ thống Hybrid: AI Đa nhiệm nhận diện hình ảnh kết hợp cùng Thuật toán gợi ý Rule-based.")
 st.markdown("---")
@@ -62,17 +59,27 @@ with tab1:
                     # LƯU ẢNH VĨNH VIỄN VÀO THƯ MỤC MY_CLOSET (Không dùng temp file nữa)
                     _, file_ext = os.path.splitext(uploaded_file.name)
                     unique_filename = f"{uuid.uuid4().hex}{file_ext.lower()}"
-                    save_path = os.path.join('my_closet', unique_filename)
+                    save_path = CLOSET_DIR / unique_filename
                     with open(save_path, "wb") as f:
                         f.write(uploaded_file.getbuffer())
 
-                    # Gọi AI nhận diện từ file vừa lưu
-                    loai_do, phong_cach, anh_ai_nhin, do_tin_cay_loai, do_tin_cay_phong_cach = phan_loai_thong_minh(save_path)
-                    
-                    # Lưu thông tin vào CSDL CSV
-                    new_row = pd.DataFrame([{'image_path': save_path, 'category': loai_do, 'style': phong_cach}])
-                    my_wardrobe = pd.concat([my_wardrobe, new_row], ignore_index=True)
-                    my_wardrobe.to_csv(DB_PATH, index=False)
+                    try:
+                        (
+                            loai_do,
+                            phong_cach,
+                            anh_ai_nhin,
+                            do_tin_cay_loai,
+                            do_tin_cay_phong_cach,
+                        ) = phan_loai_thong_minh(save_path)
+                        add_wardrobe_item(
+                            str(save_path),
+                            loai_do,
+                            phong_cach,
+                        )
+                    except (ModelLoadError, OSError, sqlite3.Error) as exc:
+                        save_path.unlink(missing_ok=True)
+                        st.error(f"Không thể phân tích hoặc lưu ảnh: {exc}")
+                        st.stop()
 
                     st.success("Đã thêm thành công vào Tủ đồ cá nhân!")
                     
@@ -89,21 +96,25 @@ with tab1:
 with tab2:
     st.header("✨ Tủ đồ của tôi")
     
-    # Đọc lại CSDL mới nhất
-    current_wardrobe = pd.read_csv(DB_PATH)
+    # Đọc dữ liệu mới nhất từ SQLite ở mỗi lần Streamlit rerun.
+    current_wardrobe = get_wardrobe_items()
     
-    if current_wardrobe.empty:
+    if not current_wardrobe:
         st.info("Tủ đồ của bạn đang trống! Hãy sang Tab 'Thêm Đồ' để nhập dữ liệu nhé.")
     else:
         # Hiển thị Selectbox để người dùng chọn 1 món đồ làm Gốc
         st.subheader("B1: Chọn một món đồ bạn muốn mặc hôm nay")
         
         # Tạo danh sách hiển thị dễ nhìn: "Tên file - Category - Style"
-        options = current_wardrobe['image_path'].tolist()
+        options = [item['image_path'] for item in current_wardrobe]
+        items_by_path = {
+            item['image_path']: item for item in current_wardrobe
+        }
+
         def format_func(path):
-            row = current_wardrobe[current_wardrobe['image_path'] == path].iloc[0]
-            name = path.split('\\')[-1].split('/')[-1]
-            return f"[{row['style']}] {row['category']} - {name}"
+            item = items_by_path[path]
+            name = Path(path).name
+            return f"[{item['style']}] {item['category']} - {name}"
             
         chosen_item_path = st.selectbox("Lựa chọn trang phục:", options, format_func=format_func)
         
