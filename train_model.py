@@ -23,16 +23,11 @@ print(f"[*] Đang sử dụng thiết bị: {device}")
 print("[*] Đang đọc file styles.csv...")
 df = pd.read_csv('styles.csv', on_bad_lines='skip')
 image_dir = 'anh_da_giai_nen/images'
-print("[*] Đang kiểm tra đối chiếu file vật lý...")
-def check_file_exists(row):
-    return os.path.exists(os.path.join(image_dir, str(row['id']) + ".jpg"))
 
-# Chỉ giữ lại những dòng trong CSV mà file ảnh thực sự tồn tại
-df_final = df_final[df_final.apply(check_file_exists, axis=1)]
-print(f"[*] Dữ liệu sạch sẽ hoàn toàn. Số lượng hợp lệ: {len(df_final)} ảnh")
-# Lọc chỉ lấy Quần áo và bỏ qua các dòng bị thiếu dữ liệu Phong cách (usage)
+# Bước 1: Lọc lấy nhóm Quần áo/Giày dép có nhãn phong cách
 df_apparel = df[(df['masterCategory'].isin(['Apparel', 'Footwear'])) & (df['usage'].notna())].copy()
 
+# Bước 2: Lọc đích danh 17 loại đồ mục tiêu
 target_categories = [
     'Tshirts', 'Shirts', 'Top', 'Tops', 'Sweaters', 'Jackets',  # Nhóm Áo
     'Jeans', 'Trousers', 'Shorts', 'Skirts', 'Track Pants',     # Nhóm Quần/Chân váy
@@ -41,20 +36,28 @@ target_categories = [
 ]
 df_filtered = df_apparel[df_apparel['articleType'].isin(target_categories)].copy()
 
-# Giới hạn 600 ảnh mỗi loại để máy không bị quá tải
+# Bước 3: Giới hạn tối đa 600 ảnh mỗi loại (KHỞI TẠO df_final TẠI ĐÂY)
 df_final = df_filtered.groupby('articleType').head(600)
 
-# Tạo từ điển dịch Tên (Chữ) sang Số (để AI hiểu được)
+# Bước 4: Kiểm tra đối chiếu file vật lý (SAU KHI ĐÃ CÓ df_final)
+print("[*] Đang kiểm tra đối chiếu file vật lý...")
+def check_file_exists(row):
+    return os.path.exists(os.path.join(image_dir, str(row['id']) + ".jpg"))
+
+df_final = df_final[df_final.apply(check_file_exists, axis=1)]
+print(f"[*] Dữ liệu sạch sẽ hoàn toàn. Số lượng hợp lệ: {len(df_final)} ảnh")
+
+# Bước 5: Tạo từ điển ánh xạ
 cat_to_idx = {cat: i for i, cat in enumerate(df_final['articleType'].unique())}
 style_to_idx = {style: i for i, style in enumerate(df_final['usage'].unique())}
 idx_to_cat = {i: cat for cat, i in cat_to_idx.items()}
 idx_to_style = {i: style for style, i in style_to_idx.items()}
 
-# Lưu từ điển ra file để ai_module.py đọc lúc chạy app
+# Lưu từ điển
 torch.save({'cat': idx_to_cat, 'style': idx_to_style}, 'labels_map.pth')
 print(f"[*] AI sẽ học {len(cat_to_idx)} Loại đồ và {len(style_to_idx)} Phong cách.")
 
-# Chia tập Train và Val, giữ phân bố loại đồ giữa hai tập.
+# Bước 6: Chia tập Train/Val
 train_df, val_df = train_test_split(
     df_final,
     test_size=0.2,
