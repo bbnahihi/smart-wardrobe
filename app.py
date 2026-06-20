@@ -8,6 +8,7 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
+from goi_y_phoi_do import suggest_outfit_by_embedding
 
 from ai_module import ModelLoadError, phan_loai_thong_minh
 from logic_module import (
@@ -126,7 +127,7 @@ with tab2:
         
         if st.button("🪄 Phối đồ cho tôi!", type="primary"):
             # Gọi thuật toán gợi ý
-            outfit_dict, outfit_style = suggest_outfit(chosen_item_path)
+            outfit_dict, outfit_style = suggest_outfit_by_embedding(chosen_item_path)
 
             if outfit_style is None:
                 st.warning("Không tìm thấy món đồ đã chọn trong tủ đồ.")
